@@ -53,12 +53,11 @@ from voice_bridge import (
     make_turn,
 )
 
-try:  # Local development convenience; LiveKit Cloud injects env vars itself.
+_LOCAL_ENV = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env.local")
+if os.path.exists(_LOCAL_ENV):  # Local development only; LiveKit Cloud injects env vars.
     from dotenv import load_dotenv
 
-    load_dotenv(".env.local")
-except ImportError:  # pragma: no cover
-    pass
+    load_dotenv(_LOCAL_ENV, override=False)
 
 # Never log transcripts, answers or document text: only ids and timings.
 logger = logging.getLogger("healthcare-rag-voice")
