@@ -340,6 +340,10 @@ async def entrypoint(ctx: JobContext) -> None:
         ctx.shutdown(reason="invalid voice session")
         return
 
+    # Connect only after the signed session has been validated. RoomIO needs the
+    # local participant (bound via participant_identity) before session.start().
+    await ctx.connect()
+
     session = _build_session()
     agent = GroundedVoiceAgent(
         rag_data=rag_data,
