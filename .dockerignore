@@ -1,0 +1,11 @@
+.git
+.venv
+**/__pycache__
+**/.pytest_cache
+**/.streamlit/secrets.toml
+**/.env
+**/.env.*
+!**/.env.agent.example
+data
+*.pdf
+tests

@@ -73,3 +73,6 @@ data/chat_history.db-journal
 data/.jwt_secret
 data/.history_key
 cloud_lite/.streamlit/secrets.toml
+
+# LiveKit agent secrets file (real values)
+.env.agent

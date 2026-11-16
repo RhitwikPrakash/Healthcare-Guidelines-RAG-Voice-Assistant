@@ -15,19 +15,18 @@ from llm_client import (
     generate_answer,
 )
 from pdf_utils import extract_pdf_pages
-from rag_core import (
-    build_answer_prompt,
-    build_chunks,
-    build_evidence_text,
-    build_index,
-    build_reference_lines,
-    format_evidence_cards,
-    looks_incomplete,
-    parse_answer_evidence,
-    retrieve_chunks,
-    strip_inline_citations,
+from rag_core import build_chunks, build_index
+from rag_service import (
+    NoDocumentsError,
+    finalize_grounded_answer,
+    prepare_grounded_request,
 )
 from request_gate import wait_for_request_slot
+
+try:  # Optional voice feature: the text app must keep working without it.
+    import voice_ui
+except Exception:  # pragma: no cover - missing optional dependency
+    voice_ui = None
 
 
 st.set_page_config(
@@ -296,6 +295,9 @@ def init_state() -> None:
             st.session_state.chats = {chat["id"]: chat}
             st.session_state.active_chat_id = chat["id"]
         st.session_state["_loaded_for"] = identity
+        if voice_ui is not None:
+            # Merge finalised voice turns from tabs closed mid-session.
+            voice_ui.recover_unsynced_sessions(owner, _save_chat)
 
 
 def active_chat() -> dict:
@@ -354,6 +356,8 @@ def render_sidebar() -> None:
     st.sidebar.caption(str(user.get("email", "")))
 
     if st.sidebar.button("Log out", use_container_width=True):
+        if voice_ui is not None:
+            voice_ui.end_voice_session(_save_chat)  # disconnect + wipe voice context
         clear_login_state()
         st.logout()
 
@@ -467,10 +471,19 @@ def render_messages() -> None:
         if message["role"] == "user":
             with st.chat_message("user", avatar="🧑"):
                 st.markdown(message["content"])
+                if message.get("source") == "voice":
+                    st.caption("🎙️ Asked by voice" + (
+                        f" — {message['voice_note']}" if message.get("voice_note") else ""
+                    ))
             continue
 
         with st.chat_message("assistant", avatar="🩺"):
             st.markdown(message["content"])
+            if message.get("source") == "voice":
+                st.caption(
+                    "🎙️ Voice answer — spoken reply was interrupted; the complete written answer is shown."
+                    if message.get("speech_interrupted") else "🎙️ Voice answer"
+                )
             abstained = (
                 "the uploaded document does not provide enough evidence to answer this"
                 in message.get("content", "").casefold()
@@ -516,24 +529,12 @@ def answer_question(question: str, answer_mode: str) -> bool:
     chat = active_chat()
     chat["notice"] = None
 
-    if not rag_data or not rag_data["chunks"]:
+    try:
+        # Shared with the voice agent: identical retrieval, prompt and limits.
+        prepared = prepare_grounded_request(question, rag_data, answer_mode)
+    except NoDocumentsError:
         chat["notice"] = "Please upload and process at least one PDF first."
         return False
-
-    retrieved = retrieve_chunks(
-        question=question,
-        chunks=rag_data["chunks"],
-        vectorizer=rag_data["vectorizer"],
-        matrix=rag_data["matrix"],
-        top_k=8,
-    )
-    evidence_text = build_evidence_text(retrieved)
-    prompt = build_answer_prompt(
-        question=question,
-        evidence_text=evidence_text,
-        answer_mode=answer_mode,
-    )
-    evidence_cards = format_evidence_cards(retrieved)
 
     try:
         with st.status("Researching and synthesizing the answer", expanded=True) as status:
@@ -546,9 +547,8 @@ def answer_question(question: str, answer_mode: str) -> bool:
                 maximum_delay=0.0,
                 minimum_spacing=3.0,
             )
-            token_limits = {"Fast": 1100, "Smart Auto": 1600, "Deep Research": 2600}
             answer, provider, model = generate_answer(
-                prompt, max_tokens=token_limits.get(answer_mode, 1600)
+                prepared.prompt, max_tokens=prepared.max_tokens
             )
             status.update(
                 label="Grounded answer prepared",
@@ -568,19 +568,8 @@ def answer_question(question: str, answer_mode: str) -> bool:
         touch_chat(chat)
         return False
 
-    clean_answer, supported_cards = parse_answer_evidence(answer, evidence_cards)
-    references = build_reference_lines(supported_cards)
-    chat["messages"].append(
-        {
-            "role": "assistant",
-            "content": clean_answer,
-            "provider": provider,
-            "model": model,
-            "references": references,
-            "evidence_cards": supported_cards,
-            "completion_warning": looks_incomplete(clean_answer),
-        }
-    )
+    result = finalize_grounded_answer(answer, provider, model, prepared)
+    chat["messages"].append(result.to_message())
     touch_chat(chat)
     return True
 
@@ -595,11 +584,16 @@ def build_markdown_download() -> str:
     ]
 
     for message in chat["messages"]:
+        voice = message.get("source") == "voice"
         if message["role"] == "user":
-            lines.extend(["## User", message["content"], ""])
+            lines.extend(["## User" + (" (voice)" if voice else ""), message["content"], ""])
+            if message.get("voice_note"):
+                lines.extend([f"_{message['voice_note']}_", ""])
             continue
 
-        lines.extend(["## Assistant", message["content"], ""])
+        lines.extend(["## Assistant" + (" (voice)" if voice else ""), message["content"], ""])
+        if message.get("speech_interrupted"):
+            lines.extend(["_Spoken reply was interrupted; complete written answer shown._", ""])
         abstained = "the uploaded document does not provide enough evidence to answer this" in message.get("content", "").casefold()
         references = [] if abstained else message.get("references", [])
         if references:
@@ -687,6 +681,17 @@ def main() -> None:
         pages = len(st.session_state.rag_data["pages"])
         chunks = len(st.session_state.rag_data["chunks"])
         st.info(f"Active knowledge base: {pages} page(s), {chunks} evidence chunk(s).")
+
+    if voice_ui is not None:
+        owner, _store = history_context()
+        voice_ui.render_voice_panel(
+            owner_id=owner,
+            chat=active_chat(),
+            rag_data=st.session_state.rag_data,
+            answer_mode=answer_mode,
+            palette=UI_THEMES.get(st.session_state.ui_theme, UI_THEMES["Dark Blue"]),
+            save_chat=_save_chat,
+        )
 
     st.divider()
     render_messages()

@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Voice assistant</title>
+<!-- Official LiveKit browser SDK, pinned exact version. No secrets ever reach this page:
+     it only receives a short-lived, single-room participant token from the Streamlit server. -->
+<script src="https://cdn.jsdelivr.net/npm/livekit-client@2.23.0/dist/livekit-client.umd.js"></script>
+<style>
+  :root {
+    --bg: #071827; --panel: #102c47; --border: #315a7d; --text: #f1f7fc;
+    --muted: #b5c9dc; --accent: #38bdf8; --accent-text: #061827;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: transparent; color: var(--text);
+    font-family: "Source Sans Pro", "Segoe UI", system-ui, sans-serif; font-size: 15px; }
+  .panel { border: 1px solid var(--border); background: var(--panel); border-radius: 14px; padding: 14px 16px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .status { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; margin-right: auto; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #64748b; }
+  .dot.listening { background: #22c55e; } .dot.thinking { background: #f59e0b; }
+  .dot.speaking { background: var(--accent); } .dot.error { background: #ef4444; }
+  .dot.connecting, .dot.reconnecting { background: #a78bfa; } .dot.muted { background: #94a3b8; }
+  .dot.pulse { animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  button { font: inherit; border-radius: 8px; padding: 6px 14px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .label { color: var(--muted); font-size: .82rem; margin: 12px 0 2px; text-transform: uppercase; letter-spacing: .04em; }
+  .box { white-space: pre-wrap; line-height: 1.45; min-height: 1.3em; }
+  .refs { margin: 6px 0 0; padding-left: 18px; color: var(--muted); font-size: .9rem; }
+  .msg { color: var(--muted); font-size: .88rem; margin-top: 10px; }
+  .msg.err { color: #fca5a5; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="panel" id="panel">
+  <div class="row">
+    <span class="status"><span class="dot" id="dot"></span><span id="state">Not connected</span></span>
+    <button class="primary" id="startBtn">Start voice session</button>
+    <button id="muteBtn" disabled>Mute</button>
+    <button id="endBtn" disabled>End session</button>
+    <button id="audioBtn" class="hidden">Enable audio</button>
+  </div>
+  <div class="label">You said</div>
+  <div class="box" id="userText">—</div>
+  <div class="label">Assistant</div>
+  <div class="box" id="agentText">—</div>
+  <ul class="refs" id="refs"></ul>
+  <div class="msg" id="msg">Microphone access is requested only after you press Start.</div>
+</div>
+<script>
+(function () {
+  "use strict";
+  // ---------------- Streamlit component protocol (v1, no build step) -------------
+  let eventSeq = 0;
+  const instanceId = Math.random().toString(36).slice(2);
+  function send(type, data) { window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type }, data), "*"); }
+  function setValue(value) {
+    eventSeq += 1;
+    send("streamlit:setComponentValue", { value: Object.assign({ id: instanceId + ":" + eventSeq }, value), dataType: "json" });
+  }
+  function setHeight() { send("streamlit:setFrameHeight", { height: document.body.scrollHeight + 4 }); }
+  new ResizeObserver(setHeight).observe(document.body);
+
+  const $ = (id) => document.getElementById(id);
+  const ui = { dot: $("dot"), state: $("state"), start: $("startBtn"), mute: $("muteBtn"), end: $("endBtn"),
+    audio: $("audioBtn"), user: $("userText"), agent: $("agentText"), refs: $("refs"), msg: $("msg") };
+
+  let args = {};
+  let room = null;
+  let muted = false;
+  let connecting = false;
+  let pendingRequest = null;   // request id awaiting a server token
+  let usedRequest = null;
+  let agentJoinTimer = null;
+  let ended = false;
+
+  const LABELS = { idle: "Not connected", connecting: "Connecting…", listening: "Listening", thinking: "Processing question…",
+    speaking: "Speaking", muted: "Muted", disconnected: "Disconnected", error: "Error", reconnecting: "Reconnecting…",
+    initializing: "Agent joining…", ready: "Listening" };
+
+  function setState(key, detail) {
+    const shown = muted && (key === "listening" || key === "ready") ? "muted" : key;
+    ui.dot.className = "dot " + shown + (["connecting", "thinking", "speaking", "reconnecting"].includes(shown) ? " pulse" : "");
+    ui.state.textContent = LABELS[shown] || shown;
+    if (detail !== undefined) message(detail, shown === "error");
+  }
+  function message(text, isError) { ui.msg.textContent = text || ""; ui.msg.className = "msg" + (isError ? " err" : ""); }
+  function setButtons(connected) {
+    ui.start.disabled = connected || connecting;
+    ui.mute.disabled = !connected;
+    ui.end.disabled = !connected && !connecting;
+  }
+  function applyPalette(p) {
+    if (!p) return;
+    const r = document.documentElement.style;
+    for (const [k, v] of Object.entries(p)) {
+      if (/^[a-z_]+$/.test(k) && /^#[0-9a-fA-F]{3,8}$/.test(String(v))) r.setProperty("--" + k.replace("_", "-"), v);
+    }
+  }
+
+  function friendlyError(err) {
+    const name = (err && err.name) || "";
+    if (name === "NotAllowedError" || name === "SecurityError") return "Microphone permission was denied. Allow microphone access in your browser and try again.";
+    if (name === "NotFoundError") return "No microphone was found on this device.";
+    if (name === "NotReadableError") return "The microphone is in use by another application.";
+    return "The voice connection failed. Text chat still works; please try again shortly.";
+  }
+
+  // ---------------- Start: user gesture primes mic + audio, then asks server for a token ------
+  ui.start.addEventListener("click", async () => {
+    if (!window.LivekitClient || !LivekitClient.isBrowserSupported()) {
+      setState("error", "This browser does not support the WebRTC features required for voice. Use a recent Chrome, Edge, Firefox or Safari.");
+      return;
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setState("error", "Microphone access is unavailable (a secure HTTPS page is required).");
+      return;
+    }
+    connecting = true; ended = false; setButtons(false); setState("connecting", "Requesting microphone permission…");
+    try {
+      const probe = await navigator.mediaDevices.getUserMedia({ audio: true });
+      probe.getTracks().forEach((t) => t.stop());
+    } catch (err) {
+      connecting = false; setButtons(false); setState("error", friendlyError(err));
+      setValue({ type: "error", code: "mic_denied" });
+      return;
+    }
+    pendingRequest = instanceId + "-" + Date.now();
+    message("Creating a secure voice session…");
+    setValue({ type: "start", request: pendingRequest });
+  });
+
+  async function connect(url, token) {
+    const LK = LivekitClient;
+    room = new LK.Room({ adaptiveStream: true, dynacast: true,
+      audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+
+    room.on(LK.RoomEvent.TrackSubscribed, (track) => {
+      if (track.kind === LK.Track.Kind.Audio) { const el = track.attach(); el.style.display = "none"; document.body.appendChild(el); }
+    });
+    room.on(LK.RoomEvent.TrackUnsubscribed, (track) => { track.detach().forEach((el) => el.remove()); });
+    room.on(LK.RoomEvent.AudioPlaybackStatusChanged, () => { ui.audio.classList.toggle("hidden", room.canPlaybackAudio); });
+    room.on(LK.RoomEvent.Reconnecting, () => setState("reconnecting", "Network interrupted, reconnecting…"));
+    room.on(LK.RoomEvent.Reconnected, () => setState("listening", ""));
+    room.on(LK.RoomEvent.ParticipantConnected, (p) => { if (p.isAgent) agentJoined(); });
+    room.on(LK.RoomEvent.ParticipantDisconnected, (p) => {
+      if (p.isAgent && !ended) { setState("disconnected", "The voice agent left the session."); finish("agent_left"); }
+    });
+    room.on(LK.RoomEvent.ParticipantAttributesChanged, (changed, p) => {
+      if (p && p.isAgent && changed["lk.agent.state"]) setState(changed["lk.agent.state"]);
+    });
+    room.on(LK.RoomEvent.Disconnected, () => { if (!ended) { setState("disconnected", "Voice session disconnected."); finish("disconnected"); } });
+
+    // Live transcriptions (user STT and agent speech) published by LiveKit Agents.
+    room.registerTextStreamHandler("lk.transcription", async (reader, info) => {
+      const mine = info.identity === room.localParticipant.identity;
+      const target = mine ? ui.user : ui.agent;
+      let text = "";
+      for await (const chunk of reader) { text += chunk; target.textContent = text; }
+      if (mine) { ui.refs.innerHTML = ""; }
+    });
+    // Full grounded answer + references (already persisted server-side before this arrives).
+    room.registerTextStreamHandler("rag.answer", async (reader) => {
+      try {
+        const data = JSON.parse(await reader.readAll());
+        ui.agent.textContent = data.answer || "";
+        ui.refs.innerHTML = "";
+        (data.references || []).forEach((r) => { const li = document.createElement("li"); li.textContent = r; ui.refs.appendChild(li); });
+        if (data.abstained) message("The uploaded documents did not contain enough evidence for that question.");
+        else if (!data.persisted) message("Answer shown, but saving to history failed. It will be retried.", true);
+        else message("");
+        setValue({ type: "turn", turn_id: String(data.turn_id || "") });
+      } catch (e) { /* ignore malformed */ }
+    });
+    room.registerTextStreamHandler("rag.status", async (reader) => {
+      try {
+        const data = JSON.parse(await reader.readAll());
+        if (data.state === "error") setState("error", data.message || "A voice provider error occurred.");
+        else if (data.state === "limit") message(data.message || "Session limit reached.");
+        else if (data.state) setState(data.state);
+      } catch (e) { /* ignore */ }
+    });
+
+    await room.connect(url, token);
+    await room.localParticipant.setMicrophoneEnabled(true);
+    try { await room.startAudio(); } catch (e) { ui.audio.classList.remove("hidden"); }
+    connecting = false; setButtons(true); setState("initializing", "Waiting for the voice agent…");
+    if (Array.from(room.remoteParticipants.values()).some((p) => p.isAgent)) agentJoined();
+    else agentJoinTimer = setTimeout(() => {
+      setState("error", "The voice agent did not join. It may be starting up or not deployed; please try again.");
+      endSession("agent_timeout");
+    }, 25000);
+  }
+  function agentJoined() { if (agentJoinTimer) { clearTimeout(agentJoinTimer); agentJoinTimer = null; } setState("listening", "Speak naturally. You can interrupt the assistant at any time."); }
+
+  function finish(reason) {
+    ended = true; connecting = false;
+    if (agentJoinTimer) { clearTimeout(agentJoinTimer); agentJoinTimer = null; }
+    setButtons(false); muted = false; ui.mute.textContent = "Mute";
+    setValue({ type: "ended", reason });
+  }
+  async function endSession(reason) {
+    ended = true;
+    try { if (room) await room.disconnect(true); } catch (e) { /* ignore */ }
+    room = null;
+    if (reason !== "agent_timeout") setState("disconnected", "Session ended.");
+    finish(reason);
+  }
+
+  ui.mute.addEventListener("click", async () => {
+    if (!room) return;
+    muted = !muted;
+    try { await room.localParticipant.setMicrophoneEnabled(!muted); } catch (e) { muted = !muted; }
+    ui.mute.textContent = muted ? "Unmute" : "Mute";
+    setState(muted ? "muted" : "listening");
+  });
+  ui.end.addEventListener("click", () => endSession("user_ended"));
+  ui.audio.addEventListener("click", async () => { try { await room.startAudio(); ui.audio.classList.add("hidden"); } catch (e) {} });
+  window.addEventListener("pagehide", () => { try { if (room) room.disconnect(true); } catch (e) {} });
+
+  // ---------------- Render messages from Streamlit ------------------------------------
+  window.addEventListener("message", async (event) => {
+    const data = event.data || {};
+    if (data.type !== "streamlit:render") return;
+    args = data.args || {};
+    applyPalette(args.palette);
+    if (args.notice) message(args.notice, Boolean(args.notice_error));
+    if (args.token && args.request && args.request === pendingRequest && usedRequest !== args.request) {
+      usedRequest = args.request; pendingRequest = null;
+      try { await connect(args.url, args.token); }
+      catch (err) { setState("error", friendlyError(err)); await endSession("connect_failed"); }
+    } else if (!args.token && pendingRequest && args.request === pendingRequest && args.notice_error) {
+      pendingRequest = null; connecting = false; setButtons(false); setState("error", args.notice);
+    }
+    setHeight();
+  });
+
+  setButtons(false);
+  send("streamlit:componentReady", { apiVersion: 1 });
+  setHeight();
+})();
+</script>
+</body>
+</html>

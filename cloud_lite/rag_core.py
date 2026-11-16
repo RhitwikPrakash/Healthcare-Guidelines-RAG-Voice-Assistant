@@ -377,9 +377,29 @@ def _answer_style(answer_mode: str) -> str:
     )
 
 
-def build_answer_prompt(question: str, evidence_text: str, answer_mode: str) -> str:
+def build_answer_prompt(
+    question: str,
+    evidence_text: str,
+    answer_mode: str,
+    conversation_context: str = "",
+) -> str:
+    """Build the grounded answer prompt.
+
+    ``conversation_context`` is optional and only used by voice follow-ups. When
+    it is empty (the text-chat default) the prompt is byte-for-byte unchanged.
+    Recent turns may help interpret pronouns such as "those tests"; they are
+    explicitly NOT evidence and the grounding rules below still apply.
+    """
     style = _answer_style(answer_mode)
     requested_items = _extract_requested_items(question)
+    context_block = ""
+    if conversation_context.strip():
+        context_block = (
+            "\nRecent conversation (ONLY for interpreting what the current question "
+            "refers to; it is NOT evidence and must never be used as a source of facts):\n"
+            + conversation_context.strip()
+            + "\n"
+        )
 
     checklist = ""
     if requested_items:
@@ -416,7 +436,7 @@ Completeness rules for multi-part questions:
 
 Answer style:
 {style}
-
+{context_block}
 Question:
 {question}
 
