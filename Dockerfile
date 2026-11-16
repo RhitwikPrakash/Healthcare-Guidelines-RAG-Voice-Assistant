@@ -10,7 +10,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN useradd --create-home --uid 10001 appuser
 WORKDIR /app
 
-COPY cloud_lite/requirements-agent.txt ./requirements-agent.txt
+COPY requirements.txt ./requirements-agent.txt
 RUN pip install --no-cache-dir -r requirements-agent.txt
 
 # Only the modules the worker needs -- no Streamlit app, secrets or PDFs.
