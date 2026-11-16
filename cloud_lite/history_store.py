@@ -34,8 +34,12 @@ def history_owner_from_google_claims(claims: dict[str, Any]) -> str | None:
     subject = claims.get("sub")
     if not isinstance(subject, str) or not subject.strip():
         return None
+    # Optional HISTORY_NAMESPACE keeps a second deployment's chats separate in
+    # the same table. Unset (the original app) gives the exact original ids.
+    namespace = _secret("HISTORY_NAMESPACE")
+    prefix = f"google-oidc:{namespace}:" if namespace else "google-oidc:"
     # Hash instead of storing raw Google subject or user's email in DB.
-    return hashlib.sha256(("google-oidc:" + subject).encode("utf-8")).hexdigest()
+    return hashlib.sha256((prefix + subject).encode("utf-8")).hexdigest()
 
 
 class HistoryStore:

@@ -161,6 +161,7 @@ byte-for-byte unchanged, and a test checks this.
 | `LIVEKIT_API_SECRET` | ✅ | auto-injected | Never sent to the browser; signs participant tokens |
 | `VOICE_CONTEXT_SECRET` | ✅ | ✅ (same value) | New random 32+ character string. Encrypts the temporary PDF context. It's separate from the LiveKit secret because LiveKit Cloud injects its own key pair into agents |
 | `LIVEKIT_AGENT_NAME` | optional | optional | Default `healthcare-rag-voice`; must match on both sides |
+| `HISTORY_NAMESPACE` | optional | — | Set it (e.g. `voice-app`) on a separately deployed copy so its chats stay separate from the original app in the same Supabase table. Leave it unset on the original app |
 | `OPENAI_API_KEY`, `GOOGLE_API_KEY` | ✅ (existing) | ✅ | Same RAG providers |
 | `OPENAI_MODEL`, `GEMINI_MODEL` | optional | optional | Defaults `gpt-5.4-mini`, `gemini-2.5-flash` |
 | `SUPABASE_URL`, `SUPABASE_SECRET_KEY` | ✅ (existing) | ✅ | Server-side only, never in the browser |
