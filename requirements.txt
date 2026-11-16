@@ -1,0 +1,3 @@
+# LiveKit voice worker dependencies (used by the root Dockerfile / `lk agent`).
+# Streamlit Community Cloud uses cloud_lite/requirements.txt next to app.py instead.
+-r cloud_lite/requirements-agent.txt
