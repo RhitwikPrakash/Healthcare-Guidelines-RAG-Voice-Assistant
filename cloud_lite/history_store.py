@@ -20,6 +20,10 @@ def _secret(name: str) -> str:
         return value.strip()
     try:
         import streamlit as st
+    except ImportError:
+        # The LiveKit voice worker has no Streamlit; it uses env vars only.
+        return ""
+    try:
         return str(st.secrets.get(name, "") or "").strip()
     except (KeyError, FileNotFoundError):
         return ""
