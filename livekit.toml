@@ -1,0 +1,5 @@
+[project]
+  subdomain = "healthcare-rag-voice-bwxh5qae"
+
+[agent]
+  id = "CA_oiYgBiycnWGA"
