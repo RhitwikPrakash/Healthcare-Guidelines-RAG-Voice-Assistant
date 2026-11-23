@@ -30,7 +30,7 @@ except Exception:  # pragma: no cover - missing optional dependency
 
 
 st.set_page_config(
-    page_title="Healthcare Guidelines RAG Assistant",
+    page_title="Multi-domain Document-based RAG Assistant",
     page_icon="🩺",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -329,7 +329,7 @@ def clear_login_state() -> None:
 
 def render_auth_screen() -> None:
     st.markdown(
-        "<h1 class='auth-title'>Healthcare Guidelines RAG Assistant</h1>",
+        "<h1 class='auth-title'>Multi-domain Document-based RAG Assistant</h1>",
         unsafe_allow_html=True,
     )
     st.caption("Sign in with your Google account to access PDF research and chat tools.")
@@ -350,7 +350,7 @@ def render_auth_screen() -> None:
 
 def render_sidebar() -> None:
     user = st.user.to_dict()
-    st.sidebar.title("Healthcare Guidelines RAG Assistant")
+    st.sidebar.title("Multi-domain Document-based RAG Assistant")
     st.sidebar.selectbox("Interface color", list(UI_THEMES), key="ui_theme")
     st.sidebar.caption(f"Signed in as **{user.get('name') or user.get('email') or 'Google user'}**")
     st.sidebar.caption(str(user.get("email", "")))
@@ -622,7 +622,7 @@ def main() -> None:
     init_state()
     render_sidebar()
 
-    st.title("Healthcare Guidelines RAG Assistant")
+    st.title("Multi-domain Document-based RAG Assistant")
     st.caption(
         "Upload healthcare guideline PDFs, ask questions, and receive "
         "evidence-grounded answers with references shown after each answer."
